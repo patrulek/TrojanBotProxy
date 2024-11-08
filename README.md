@@ -7,7 +7,7 @@ Minimal example for working with [TrojanBot Telegram bot](https://x.com/TrojanOn
 If you want to build it from source, download Go toolchain and write
 
 ```console
-go build main.go
+go build .
 ```
 
 in the console, then run executable.
@@ -15,7 +15,7 @@ in the console, then run executable.
 If you want to run it from source, download Go toolchain and write
 
 ```console
-go run main.go
+go run .
 ```
 
 in the console.
