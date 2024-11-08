@@ -20,6 +20,10 @@ go run main.go
 
 in the console.
 
+Program arguments:
+
+* `-autobuy` - if this flag is true, application will assume that TrojanBot is configured with autobuy option and there will be no need for button click (default: `true`)
+
 ## Configuration
 
 `config.toml` is provided to setup application id and application hash that are obtainable from [this link](https://my.telegram.org/apps). In addition to that, phone number and TrojanBot telegram contact name is also required.
@@ -28,11 +32,13 @@ in the console.
 
 Program will load `config.toml` file and then try to log in to Telegram account. User will be asked for login code and 2FA code (if setup for account). After successful authentication, user will be repeatadly asked for a token address to buy by bot. Inserting `quit` or `exit` will disconnect session and terminate program.
 
-Application will always use the first button on the third row from the bot message, if so many buttons are found
+Application will always use the first button on the third row from the bot message, if so many buttons are found, unless `-autobuy` flag is set to true.
 
 ![picrel](assets/img/image.png)
 
 ## Sample output
+
+* `-autobuy=false`
 
 ```console
 Enter code: 45956
@@ -43,6 +49,15 @@ ijADJCJHdAxrc\nShare token with your Reflink\n\nBalance: 0.003 SOL — W1 ✏️
 Enter token address: exit
 2024/11/08 11:53:03 INFO exiting...
 2024/11/08 11:53:03 INFO telegram client finished
+```
+
+* `-autobuy=true`
+
+```console
+Enter code: 76016
+Enter token address: 6aGXXVT9AMY9jJTt7DRVkfv6WqpmTcggFVKrDwBAFpVM
+2024/11/08 14:34:20 INFO failed to buy token message="Buy $TOKEN — (TOKEN) 📈 • 🫧\n6aGXXVT9AMY9jJTt7DRVkfv6WqpmTcggF
+VKrDwBAFpVM\nShare token with your Reflink\n\nBalance: 0.003 SOL — W1 ✏️\nPrice: ░░░░░░░░ — LIQ: ░░░░░ — MC: ░░░░░\n1h: ░░░░ — 24h: ░░░░\nRenounced ✅\n\n\n🔴 Insufficient balance for buy amount + gas"
 ```
 
 ## Use case

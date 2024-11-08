@@ -35,11 +35,11 @@ func NewTelegramClient(cfg Telegram) (*TelegramClient, error) {
 	return &TelegramClient{client: client, auth: auth, cfg: cfg}, nil
 }
 
-func (c *TelegramClient) Run(ctx context.Context) error {
-	return c.client.Run(ctx, c.runFunc())
+func (c *TelegramClient) Run(ctx context.Context, autobuy bool) error {
+	return c.client.Run(ctx, c.runFunc(autobuy))
 }
 
-func (c *TelegramClient) runFunc() func(ctx context.Context) error {
+func (c *TelegramClient) runFunc(autobuy bool) func(ctx context.Context) error {
 	return func(ctx context.Context) error {
 		if err := c.authenticate(ctx); err != nil {
 			return err
@@ -89,10 +89,19 @@ func (c *TelegramClient) runFunc() func(ctx context.Context) error {
 					continue
 				}
 
-				if err := c.clickButton(ctx, msg, api, trojanUser, 2, 0); err != nil {
-					slog.Error("failed to click on button", "error", err)
+				if !autobuy {
+					if err := c.clickButton(ctx, msg, api, trojanUser, 2, 0); err != nil {
+						slog.Error("failed to click on button", "error", err)
+					}
 					continue
 				}
+
+				if !strings.Contains(msg.Message, "Buy Success!") {
+					slog.Info("failed to buy token", "message", msg.Message)
+					continue
+				}
+
+				slog.Info("buy order placed successfully", "message", msg.Message)
 			}
 		}
 	}
