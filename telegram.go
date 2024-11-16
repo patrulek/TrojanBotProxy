@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"math/rand"
 	"os"
+	"os/signal"
 	"strings"
 	"syscall"
 	"time"
@@ -15,16 +16,26 @@ import (
 	"github.com/gotd/td/telegram"
 	"github.com/gotd/td/telegram/auth"
 	"github.com/gotd/td/tg"
+	"github.com/patrulek/trojanbotproxy/config"
 	"golang.org/x/term"
 )
+
+type DataSource interface {
+	Retrieve(ctx context.Context) ([]string, error)
+}
 
 type TelegramClient struct {
 	client *telegram.Client
 	auth   Authenticator
-	cfg    Telegram
+	cfg    config.Telegram
+
+	ds           DataSource
+	boughtTokens map[string]struct{}
+
+	doneC chan struct{}
 }
 
-func NewTelegramClient(cfg Telegram) (*TelegramClient, error) {
+func NewTelegramClient(cfg config.Telegram, ds DataSource) (*TelegramClient, error) {
 	if cfg.AppHash == "" || cfg.AppId == 0 || cfg.PhoneNumber == "" || cfg.TrojanContactName == "" {
 		return nil, errors.New("invalid config")
 	}
@@ -32,15 +43,26 @@ func NewTelegramClient(cfg Telegram) (*TelegramClient, error) {
 	client := telegram.NewClient(cfg.AppId, cfg.AppHash, telegram.Options{})
 	auth := Authenticator{PhoneNumber: cfg.PhoneNumber}
 
-	return &TelegramClient{client: client, auth: auth, cfg: cfg}, nil
+	return &TelegramClient{
+		client:       client,
+		auth:         auth,
+		cfg:          cfg,
+		ds:           ds,
+		boughtTokens: make(map[string]struct{}),
+		doneC:        make(chan struct{}),
+	}, nil
 }
 
-func (c *TelegramClient) Run(ctx context.Context, autobuy bool) error {
+func (c *TelegramClient) Start(ctx context.Context, autobuy bool) error {
+	slog.Info("starting telegram client")
+
 	return c.client.Run(ctx, c.runFunc(autobuy))
 }
 
 func (c *TelegramClient) runFunc(autobuy bool) func(ctx context.Context) error {
 	return func(ctx context.Context) error {
+		defer close(c.doneC)
+
 		if err := c.authenticate(ctx); err != nil {
 			return err
 		}
@@ -62,35 +84,107 @@ func (c *TelegramClient) runFunc(autobuy bool) func(ctx context.Context) error {
 
 		trojanUser, _ := channel.Users[0].AsNotEmpty()
 
-		for {
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			default:
-				token, err := c.readTokenAddress()
-				if err != nil {
-					slog.Error("failed to read token address", "error", err)
+		if c.ds == nil {
+			return c.runCmdFunc(ctx, api, trojanUser, autobuy)
+		}
+
+		return c.runDataSourceFunc(ctx, api, trojanUser, autobuy)
+	}
+}
+
+func (c *TelegramClient) runCmdFunc(ctx context.Context, api *tg.Client, user *tg.User, autobuy bool) error {
+	interruptC := make(chan os.Signal, 1)
+	signal.Notify(interruptC, os.Interrupt, syscall.SIGTERM)
+
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-interruptC:
+			return nil
+		default:
+			token, err := c.readTokenAddress()
+			if err != nil {
+				slog.Error("failed to read token address", "error", err)
+				continue
+			}
+
+			if token == "quit" || token == "exit" {
+				slog.Info("exiting...")
+				return nil
+			}
+
+			if err := c.sendMessage(ctx, api, user, token); err != nil {
+				slog.Error("failed to send message", "error", err)
+				continue
+			}
+
+			msg, err := c.retrieveLastMessage(ctx, api, user)
+			if err != nil {
+				slog.Error("failed to retrieve last message", "error", err)
+				continue
+			}
+
+			if !autobuy {
+				if err := c.clickButton(ctx, msg, api, user, 2, 0); err != nil {
+					slog.Error("failed to click on button", "error", err)
+				}
+				continue
+			}
+
+			if !strings.Contains(msg.Message, "Buy Success!") {
+				slog.Info("failed to buy token", "message", msg.Message)
+				continue
+			}
+
+			slog.Info("buy order placed successfully", "message", msg.Message)
+		}
+	}
+}
+
+func (c *TelegramClient) runDataSourceFunc(ctx context.Context, api *tg.Client, user *tg.User, autobuy bool) error {
+	interruptC := make(chan os.Signal, 1)
+	signal.Notify(interruptC, os.Interrupt, syscall.SIGTERM)
+
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-interruptC:
+			slog.Info("received interrupt signal")
+			return nil
+		case <-ticker.C:
+			tokens, err := c.ds.Retrieve(ctx)
+			if err != nil {
+				slog.Error("failed to retrieve tokens", "error", err)
+				continue
+			}
+
+			if len(tokens) == 0 {
+				continue // No data
+			}
+
+			for _, token := range tokens {
+				if _, ok := c.boughtTokens[token]; ok {
 					continue
 				}
 
-				if token == "quit" || token == "exit" {
-					slog.Info("exiting...")
-					return nil
-				}
-
-				if err := c.sendMessage(ctx, api, trojanUser, token); err != nil {
+				if err := c.sendMessage(ctx, api, user, token); err != nil {
 					slog.Error("failed to send message", "error", err)
 					continue
 				}
 
-				msg, err := c.retrieveLastMessage(ctx, api, trojanUser)
+				msg, err := c.retrieveLastMessage(ctx, api, user)
 				if err != nil {
 					slog.Error("failed to retrieve last message", "error", err)
 					continue
 				}
 
 				if !autobuy {
-					if err := c.clickButton(ctx, msg, api, trojanUser, 2, 0); err != nil {
+					if err := c.clickButton(ctx, msg, api, user, 2, 0); err != nil {
 						slog.Error("failed to click on button", "error", err)
 					}
 					continue
@@ -101,6 +195,7 @@ func (c *TelegramClient) runFunc(autobuy bool) func(ctx context.Context) error {
 					continue
 				}
 
+				c.boughtTokens[token] = struct{}{}
 				slog.Info("buy order placed successfully", "message", msg.Message)
 			}
 		}

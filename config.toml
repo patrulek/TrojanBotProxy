@@ -3,3 +3,12 @@ app_id = 123456789
 app_hash = "123ha456sh789"
 phone_number = "+97253123456"
 trojan_contact_name = "solana_trojanbot"
+
+[datasource]
+host = "http://example.com"
+port = 1234
+method = "retrievetokens"
+params = { mcap = "10000" }
+auth = { context = "header", name = "X-API-KEY", value = "api-key" } 
+interval = "5s"
+token_path = "TokenAddress"
