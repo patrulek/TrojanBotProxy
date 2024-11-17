@@ -53,13 +53,13 @@ func NewTelegramClient(cfg config.Telegram, ds DataSource) (*TelegramClient, err
 	}, nil
 }
 
-func (c *TelegramClient) Start(ctx context.Context, autobuy bool) error {
+func (c *TelegramClient) Start(ctx context.Context) error {
 	slog.Info("starting telegram client")
 
-	return c.client.Run(ctx, c.runFunc(autobuy))
+	return c.client.Run(ctx, c.runFunc())
 }
 
-func (c *TelegramClient) runFunc(autobuy bool) func(ctx context.Context) error {
+func (c *TelegramClient) runFunc() func(ctx context.Context) error {
 	return func(ctx context.Context) error {
 		defer close(c.doneC)
 
@@ -85,14 +85,14 @@ func (c *TelegramClient) runFunc(autobuy bool) func(ctx context.Context) error {
 		trojanUser, _ := channel.Users[0].AsNotEmpty()
 
 		if c.ds == nil {
-			return c.runCmdFunc(ctx, api, trojanUser, autobuy)
+			return c.runCmdFunc(ctx, api, trojanUser)
 		}
 
-		return c.runDataSourceFunc(ctx, api, trojanUser, autobuy)
+		return c.runDataSourceFunc(ctx, api, trojanUser)
 	}
 }
 
-func (c *TelegramClient) runCmdFunc(ctx context.Context, api *tg.Client, user *tg.User, autobuy bool) error {
+func (c *TelegramClient) runCmdFunc(ctx context.Context, api *tg.Client, user *tg.User) error {
 	interruptC := make(chan os.Signal, 1)
 	signal.Notify(interruptC, os.Interrupt, syscall.SIGTERM)
 
@@ -114,35 +114,27 @@ func (c *TelegramClient) runCmdFunc(ctx context.Context, api *tg.Client, user *t
 				return nil
 			}
 
-			if err := c.sendMessage(ctx, api, user, token); err != nil {
-				slog.Error("failed to send message", "error", err)
+			if _, ok := c.boughtTokens[token]; ok {
+				slog.Info("token already bought", "token", token)
 				continue
 			}
 
-			msg, err := c.retrieveLastMessage(ctx, api, user)
+			fctx, fcancel := context.WithTimeout(ctx, 75*time.Second) // 75s to paste token and wait for tx confirmation
+			err = c.buyToken(fctx, api, user, token)
+			fcancel()
+
 			if err != nil {
-				slog.Error("failed to retrieve last message", "error", err)
+				slog.Error("failed to buy token", "error", err)
 				continue
 			}
 
-			if !autobuy {
-				if err := c.clickButton(ctx, msg, api, user, 2, 0); err != nil {
-					slog.Error("failed to click on button", "error", err)
-				}
-				continue
-			}
-
-			if !strings.Contains(msg.Message, "Buy Success!") {
-				slog.Info("failed to buy token", "message", msg.Message)
-				continue
-			}
-
-			slog.Info("buy order placed successfully", "message", msg.Message)
+			c.boughtTokens[token] = struct{}{}
+			slog.Info("token bought", "token", token)
 		}
 	}
 }
 
-func (c *TelegramClient) runDataSourceFunc(ctx context.Context, api *tg.Client, user *tg.User, autobuy bool) error {
+func (c *TelegramClient) runDataSourceFunc(ctx context.Context, api *tg.Client, user *tg.User) error {
 	interruptC := make(chan os.Signal, 1)
 	signal.Notify(interruptC, os.Interrupt, syscall.SIGTERM)
 
@@ -169,35 +161,85 @@ func (c *TelegramClient) runDataSourceFunc(ctx context.Context, api *tg.Client, 
 
 			for _, token := range tokens {
 				if _, ok := c.boughtTokens[token]; ok {
+					slog.Info("token already bought", "token", token)
 					continue
 				}
 
-				if err := c.sendMessage(ctx, api, user, token); err != nil {
-					slog.Error("failed to send message", "error", err)
-					continue
-				}
+				fctx, fcancel := context.WithTimeout(ctx, 75*time.Second) // 75s to paste token and wait for tx confirmation
+				err = c.buyToken(fctx, api, user, token)
+				fcancel()
 
-				msg, err := c.retrieveLastMessage(ctx, api, user)
 				if err != nil {
-					slog.Error("failed to retrieve last message", "error", err)
-					continue
-				}
-
-				if !autobuy {
-					if err := c.clickButton(ctx, msg, api, user, 2, 0); err != nil {
-						slog.Error("failed to click on button", "error", err)
-					}
-					continue
-				}
-
-				if !strings.Contains(msg.Message, "Buy Success!") {
-					slog.Info("failed to buy token", "message", msg.Message)
+					slog.Error("failed to buy token", "error", err)
 					continue
 				}
 
 				c.boughtTokens[token] = struct{}{}
-				slog.Info("buy order placed successfully", "message", msg.Message)
+				slog.Info("token bought", "token", token)
 			}
+		}
+	}
+}
+
+func (c *TelegramClient) buyToken(ctx context.Context, api *tg.Client, user *tg.User, token string) error {
+	if _, err := c.sendMessage(ctx, api, user, token); err != nil {
+		return err
+	}
+
+	retries := 5
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+			if retries == 0 {
+				return errors.New("retries exceeded")
+			}
+
+			msg, err := c.retrieveLastMessage(ctx, api, user)
+			if err != nil {
+				slog.Error("failed to retrieve last message", "error", err)
+				retries--
+				continue
+			}
+
+			retries = 5
+
+			if strings.EqualFold(msg.Message, token) {
+				// token message, wait for channel updates
+				continue
+			}
+
+			if strings.Contains(msg.Message, "Token not found") {
+				// token not found
+				return fmt.Errorf("token not found: %s", msg.Message)
+			}
+
+			if strings.Contains(msg.Message, "Transaction sent") {
+				// need to wait for confirmation
+				continue
+			}
+
+			if strings.Contains(msg.Message, "Insufficient balance") {
+				// not bought due to insufficient balance
+				return fmt.Errorf("insufficient balance: %s", msg.Message)
+			}
+
+			if strings.Contains(msg.Message, "tx might have timed out") || strings.Contains(msg.Message, "confirm before retrying") {
+				// probably not bought due to tx might have timed out
+				return fmt.Errorf("tx might have timed out: %s", msg.Message)
+			}
+
+			if !strings.Contains(msg.Message, "Buy Success!") {
+				// dont know if bought or not, continue
+				continue
+			}
+
+			// buy success
+			return nil
 		}
 	}
 }
@@ -218,25 +260,20 @@ func (c *TelegramClient) readTokenAddress() (string, error) {
 	return strings.TrimSpace(token), nil
 }
 
-func (c *TelegramClient) sendMessage(ctx context.Context, api *tg.Client, user *tg.User, token string) error {
+func (c *TelegramClient) sendMessage(ctx context.Context, api *tg.Client, user *tg.User, token string) (tg.UpdatesClass, error) {
 	req := &tg.MessagesSendMessageRequest{
 		Message:  token,
 		Peer:     user.AsInputPeer(),
 		RandomID: rand.Int63(), // Random ID to avoid duplicate messages
 	}
 
-	if _, err := api.MessagesSendMessage(ctx, req); err != nil {
-		return err
-	}
-
-	time.Sleep(time.Second)
-	return nil
+	return api.MessagesSendMessage(ctx, req)
 }
 
 func (c *TelegramClient) retrieveLastMessage(ctx context.Context, api *tg.Client, user *tg.User) (*tg.Message, error) {
 	updates, err := api.MessagesGetHistory(ctx, &tg.MessagesGetHistoryRequest{
 		Peer:  user.AsInputPeer(),
-		Limit: 10,
+		Limit: 3, // Get last 3 messages
 	})
 	if err != nil {
 		return nil, err
@@ -267,56 +304,6 @@ func (c *TelegramClient) retrieveLastMessage(ctx context.Context, api *tg.Client
 	}
 
 	return lastMessage, nil
-}
-
-func (c *TelegramClient) clickButton(ctx context.Context, msg *tg.Message, api *tg.Client, user *tg.User, row, column int) error {
-	if msg.ReplyMarkup == nil {
-		return fmt.Errorf("no reply markup")
-	}
-
-	markup, ok := msg.ReplyMarkup.(*tg.ReplyInlineMarkup)
-	if !ok {
-		return fmt.Errorf("unexpected reply markup type: %T", msg.ReplyMarkup)
-	}
-
-	if row >= len(markup.Rows) {
-		return fmt.Errorf("row %d out of bounds", row)
-	}
-
-	rowButtons := markup.Rows[row].Buttons
-	if column >= len(rowButtons) {
-		return fmt.Errorf("column %d out of bounds", column)
-	}
-
-	button := rowButtons[column]
-	buttonCallback, ok := button.(*tg.KeyboardButtonCallback)
-	if !ok {
-		return fmt.Errorf("unexpected button data type: %T", button)
-	}
-
-	if !strings.Contains(buttonCallback.Text, "SOL") {
-		return fmt.Errorf("unexpected button data: %s", buttonCallback.Text)
-	}
-
-	_, err := api.MessagesGetBotCallbackAnswer(ctx, &tg.MessagesGetBotCallbackAnswerRequest{
-		Peer:  user.AsInputPeer(),
-		MsgID: msg.ID,
-		Data:  buttonCallback.Data,
-	})
-	if err != nil {
-		return err
-	}
-
-	slog.Info("buy order placed successfully", "button", buttonCallback.Text)
-	time.Sleep(time.Second)
-
-	replyMsg, err := c.retrieveLastMessage(ctx, api, user)
-	if err != nil {
-		return err
-	}
-
-	slog.Info("reply message", "message", replyMsg.Message)
-	return nil
 }
 
 // Authenticator implements auth.UserAuthenticator prompting the console for input.

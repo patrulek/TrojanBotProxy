@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"flag"
 	"log/slog"
 	"time"
 
@@ -10,9 +9,6 @@ import (
 )
 
 func main() {
-	autobuy := flag.Bool("autobuy", true, "auto buy")
-	flag.Parse()
-
 	cfg, err := config.Load("")
 	if err != nil {
 		slog.Error("failed to load config", "error", err)
@@ -54,7 +50,7 @@ func main() {
 		srvs = append(srvs, ds)
 	}
 
-	if err := client.Start(ctx, *autobuy); err != nil {
+	if err := client.Start(ctx); err != nil {
 		slog.Error("failed to run telegram client", "error", err)
 		return
 	}

@@ -20,10 +20,6 @@ go run .
 
 in the console.
 
-Program arguments:
-
-* `-autobuy` - if this flag is true, application will assume that TrojanBot is configured with autobuy option and there will be no need for button click (default: `true`)
-
 ## Configuration
 
 `config.toml` is provided to setup application id and application hash that are obtainable from [this link](https://my.telegram.org/apps). In addition to that, phone number and TrojanBot telegram contact name is also required.
@@ -54,31 +50,16 @@ Program will load `config.toml` file, start HTTP data source polling thread (if 
 - if HTTP data source is configured, application will automatically poll data source for tokens to buy and then pass them to TrojanBot channel
 - if no HTTP data source configured, user will be repeatadly asked for a token address to buy by bot; inserting `quit` or `exit` will disconnect session and terminate program
 
-Application will always use the first button on the third row from the bot message, if so many buttons are found, unless `-autobuy` flag is set to true, no matter if HTTP data source is configured or not.
-
-![picrel](assets/img/image.png)
+Application expects that TrojanBot was configured with `autobuy` option.
+Application will never buy same token twice (in the same session; it doesnt have any storage so restarting process will make this possible).
+After pasting token into the TrojanBot channel it waits for confirmation by parsing TrojanBot reply messages.
 
 ## Sample output
-
-* `-autobuy=false`
-
-```console
-Enter code: 45956
-Enter token address: CrUJuZPfmE9QSXY916c2AWw3mQtzmbLijADJCJHdAxrc
-2024/11/08 11:52:39 INFO buy order placed successfully button="✅ 0.002 SOL"
-2024/11/08 11:52:46 INFO reply message message="Buy $TRUMP401K — (Trump401K) 📈 • 🫧\nCrUJuZPfmE9QSXY916c2AWw3mQtzmbL
-ijADJCJHdAxrc\nShare token with your Reflink\n\nBalance: 0.003 SOL — W1 ✏️\nPrice: $0.0519 — LIQ: $205.8K — MC: $518.98M\n5m: 0% — 1h: 0%\nRenounced ✅\n\n\n🔴 Insufficient balance for buy amount + gas"
-Enter token address: exit
-2024/11/08 11:53:03 INFO exiting...
-2024/11/08 11:53:03 INFO telegram client finished
-```
-
-* `-autobuy=true`
 
 ```console
 Enter code: 76016
 Enter token address: 6aGXXVT9AMY9jJTt7DRVkfv6WqpmTcggFVKrDwBAFpVM
-2024/11/08 14:34:20 INFO failed to buy token message="Buy $TOKEN — (TOKEN) 📈 • 🫧\n6aGXXVT9AMY9jJTt7DRVkfv6WqpmTcggF
+2024/11/08 14:34:20 INFO failed to buy token error="insufficient balance: Buy $TOKEN — (TOKEN) 📈 • 🫧\n6aGXXVT9AMY9jJTt7DRVkfv6WqpmTcggF
 VKrDwBAFpVM\nShare token with your Reflink\n\nBalance: 0.003 SOL — W1 ✏️\nPrice: ░░░░░░░░ — LIQ: ░░░░░ — MC: ░░░░░\n1h: ░░░░ — 24h: ░░░░\nRenounced ✅\n\n\n🔴 Insufficient balance for buy amount + gas"
 ```
 
